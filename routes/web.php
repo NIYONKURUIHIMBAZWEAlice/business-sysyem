@@ -6,15 +6,22 @@ use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\WorkerController;
 use App\Http\Controllers\ProductController;
 use App\Http\Controllers\SaleController;
+use App\Http\Controllers\NotificationController;
 use Illuminate\Support\Facades\Route;
 
 Route::get('/', function () {
-    return "HELLO WORLD";
+    return redirect()->route('login');
+});
+// Boss only routes
+Route::middleware(['auth', 'verified', 'boss'])->group(function () {
+    Route::get('/dashboard', [DashboardController::class, 'index'])->name('dashboard');
+    Route::get('/notifications', [NotificationController::class, 'index'])->name('notifications.index');
+    Route::delete('/notifications/{id}', [NotificationController::class, 'destroy'])->name('notifications.destroy');
+    Route::delete('/notifications', [NotificationController::class, 'destroyAll'])->name('notifications.destroyAll');
 });
 
-Route::middleware(['auth', 'verified'])->group(function () {
-    Route::get('/dashboard', [DashboardController::class, 'index'])->name('dashboard');
-
+// Boss and worker routes
+Route::middleware(['auth'])->group(function () {
     // Profile routes
     Route::get('/profile', [ProfileController::class, 'edit'])->name('profile.edit');
     Route::patch('/profile', [ProfileController::class, 'update'])->name('profile.update');
@@ -27,13 +34,12 @@ Route::middleware(['auth', 'verified'])->group(function () {
     // Worker routes
     Route::resource('workers', WorkerController::class);
     Route::get('workers/{worker}/toggle-status', [WorkerController::class, 'toggleStatus'])->name('workers.toggleStatus');
-});
 
-Route::middleware(['auth'])->group(function () {
+    // Product routes
     Route::resource('products', ProductController::class);
-});
 
-Route::middleware(['auth'])->group(function () {
+    // Sales routes
     Route::resource('sales', SaleController::class);
 });
+
 require __DIR__.'/auth.php';

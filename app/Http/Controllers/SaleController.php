@@ -8,6 +8,8 @@ use Illuminate\Support\Facades\Auth;
 use App\Models\Sale;
 use App\Models\Product;
 use App\Models\Worker;
+use App\Models\BusinessNotification;
+
 
 class SaleController extends Controller
 {
@@ -35,43 +37,93 @@ class SaleController extends Controller
     /**
      * Store a newly created resource in storage.
      */
-    public function store(Request $request)
-    {
-        $worker = Auth::user();
-        $validated = $request->validate([
-            'products' => 'required|array',
-            'products.*.id' => 'required|exists:products,id',
-            'products.*.quantity' => 'required|integer|min:1',
-            'gps_location' => 'nullable|string',
-        ]);
+public function store(Request $request)
+{
+    $worker = Auth::user();
+    $validated = $request->validate([
+        'products' => 'required|array',
+        'products.*.id' => 'required|exists:products,id',
+        'products.*.quantity' => 'required|integer|min:1',
+        'gps_location' => 'nullable|string',
+        'payment_method' => 'required|in:cash,mobile_money',
+    ]);
 
-        $total = 0;
-        foreach ($validated['products'] as $item) {
-            $product = Product::find($item['id']);
-            $total += $product->price * $item['quantity'];
-        }
-
-        $sale = Sale::create([
-            'business_id' => $worker->business_id,
-            'worker_id' => $worker->id,
-            'total_amount' => $total,
-            'gps_location' => $request->gps_location,
-        ]);
-
-        foreach ($validated['products'] as $item) {
-            $product = Product::find($item['id']);
-            $sale->items()->create([
-                'product_id' => $product->id,
-                'quantity' => $item['quantity'],
-                'price' => $product->price,
-                'subtotal' => $product->price * $item['quantity'],
-            ]);
-        }
- // Fire real-time notification
-    event(new \App\Events\SaleRecorded($sale));
-        return redirect()->route('sales.index')->with('success', 'Sale recorded!');
+    $total = 0;
+    foreach ($validated['products'] as $item) {
+        $product = Product::find($item['id']);
+        $total += $product->price * $item['quantity'];
     }
 
+    $sale = Sale::create([
+        'business_id' => $worker->business_id,
+        'worker_id' => $worker->id,
+        'total_amount' => $total,
+        'payment_method' => $request->payment_method,
+        'gps_location' => $request->gps_location,
+    ]);
+
+    foreach ($validated['products'] as $item) {
+        $product = Product::find($item['id']);
+        $quantitySold = $item['quantity'];
+
+        $sale->items()->create([
+            'product_id' => $product->id,
+            'quantity' => $quantitySold,
+            'price' => $product->price,
+            'subtotal' => $product->price * $quantitySold,
+        ]);
+
+        // Check if sold more than stock
+        if ($quantitySold > $product->stock_quantity) {
+            BusinessNotification::create([
+                'business_id' => $worker->business_id,
+                'title' => '⚠️ Sale Exceeded Stock',
+                'message' => 'Worker sold ' . $quantitySold . ' of ' . $product->name . ' but only ' . $product->stock_quantity . ' in stock!',
+                'is_read' => false,
+            ]);
+        }
+
+        // Reduce stock quantity
+        $newStock = max(0, $product->stock_quantity - $quantitySold);
+        $product->update(['stock_quantity' => $newStock]);
+
+        // Check if stock is low (5 or less)
+        if ($newStock <= 5) {
+            BusinessNotification::create([
+                'business_id' => $worker->business_id,
+                'title' => '🔴 Low Stock Alert',
+                'message' => $product->name . ' has only ' . $newStock . ' items left in stock. Please restock soon!',
+                'is_read' => false,
+            ]);
+
+            // Fire real-time low stock alert
+            event(new \App\Events\SaleRecorded($sale));
+        }
+    }
+
+    // Load items with product details for notification
+    $sale->load('items.product');
+
+    // Build notification message
+    $itemNames = $sale->items->map(function($item) {
+        return $item->product->name . ' x' . $item->quantity;
+    })->join(', ');
+
+    $paymentMethod = $request->payment_method === 'cash' ? 'Cash' : 'Mobile Money';
+
+    BusinessNotification::create([
+        'business_id' => $worker->business_id,
+        'title' => '💰 New Sale Recorded',
+        'message' => 'Worker sold: ' . $itemNames . ' | Total: $' . $total . ' | Payment: ' . $paymentMethod,
+        'is_read' => false,
+    ]);
+
+    // Fire real-time notification
+    \Log::info('Firing SaleRecorded event for sale ID: ' . $sale->id);
+    event(new \App\Events\SaleRecorded($sale));
+
+    return redirect()->route('sales.index')->with('success', 'Sale recorded!');
+}
     /**
      * Display the specified resource.
      */
